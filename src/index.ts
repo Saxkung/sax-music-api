@@ -15,28 +15,26 @@ interface Track { id: number; title: string; artist: string; src: string; projec
 
 
 // -----------------------------------------------------------------
-// 2. สร้าง Elysia App Factory Function (รับ env เข้ามา)
+// 2. สร้าง Elysia App Factory (รับ env เข้ามา)
 // -----------------------------------------------------------------
 const createApp = (env: Env) => {
-  return new Elysia({ aot: false })
+  const app = new Elysia({ aot: false })
     .use(cors())
-    // ✅ หัวใจหลัก: ผูก DB และ Token เข้ากับ Context ของ Elysia
-    // นี่คือวิธีแก้ Bug Reading 'DB' ที่ถูกต้องที่สุด
-    .decorate('db', env.DB) 
-    .decorate('adminToken', env.ADMIN_TOKEN) 
+    .state('env', env)  // 🔑 inject env เข้า store ตั้งแต่ต้น!
     
     // -----------------------------------------------------------------
-    // 3. GET Portfolio Endpoint (Public)
+    // 3. GET Portfolio Endpoint (Public - ไม่ต้องใช้ Token)
     // -----------------------------------------------------------------
-    .get('/api/v1/portfolio', async ({ db }) => {
-      // Handler เข้าถึง DB ได้โดยตรงผ่าน { db }
+    .get('/api/v1/portfolio', async ({ store }) => {
       try {
-        const database = db as D1Database;
+        const env = store.env as Env;
+        const database = env.DB;
+        
         const { results: categories } = await database.prepare("SELECT * FROM Category").all<Category>();
         const { results: projects } = await database.prepare("SELECT * FROM Project").all<Project>();
         const { results: tracks } = await database.prepare("SELECT * FROM Track").all<Track>();
 
-        // โค้ดประกอบข้อมูล (JavaScript Join Logic)
+        // โค้ดประกอบข้อมูล
         const portfolioData = categories.map(category => {
           const categoryProjects = projects
             .filter(p => p.category_id === category.id)
@@ -47,18 +45,23 @@ const createApp = (env: Env) => {
                   src: track.src
               }));
               return {
-                id: project.id, title: project.title, description: project.description, image: project.image, tracks: projectTracks
+                id: project.id, 
+                title: project.title, 
+                description: project.description, 
+                image: project.image, 
+                tracks: projectTracks
               };
             });
           return { category: category.name, items: categoryProjects };
         });
+        
         return portfolioData;
 
       } catch (e: any) {
-        // Log Error จริงๆ ออกมา
         console.error('D1 Query Error:', e.message, e.stack);
         return new Response(JSON.stringify({ error: e.message, stack: e.stack }), { 
-          status: 500, headers: { 'Content-Type': 'application/json' } 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
         });
       }
     })
@@ -68,56 +71,94 @@ const createApp = (env: Env) => {
     // -----------------------------------------------------------------
     .group('/api/admin', (adminGroup) => 
       adminGroup
-        // Middleware: ตรวจสอบ Token (เข้าถึง Token ผ่าน { store })
+        // Middleware: ตรวจสอบ Token
         .onRequest(({ request, store, set }) => {
-          const adminToken = (store as { adminToken: string }).adminToken; // ดึง Token ที่ถูก decorate ไว้
+          const env = store.env as Env;
           const authHeader = request.headers.get('Authorization');
-          const expectedToken = `Bearer ${adminToken}`;
+          const expectedToken = `Bearer ${env.ADMIN_TOKEN}`;
+          
+          // 🔍 Debug: ดูค่าจริงๆ
+          console.log('🔐 Auth Debug:', {
+            received: authHeader,
+            expected: expectedToken,
+            match: authHeader === expectedToken
+          });
           
           if (!authHeader || authHeader !== expectedToken) {
             set.status = 401;
-            return { error: 'Invalid admin token' };
+            return { 
+              error: 'Invalid admin token',
+              debug: {
+                receivedHeader: authHeader ? 'present' : 'missing',
+                expectedFormat: 'Bearer <token>'
+              }
+            };
           }
         })
         
-        // GET /api/admin/projects (ตัวอย่างที่ Next.js Admin UI เรียก)
-        .get('/projects', async ({ db, set }) => {
-            try {
-              const database = db as D1Database;
-              const { results: categories } = await database.prepare("SELECT id, name FROM Category").all<Category>();
-              const { results: projects } = await database.prepare("SELECT * FROM Project").all<Project>();
-              const { results: tracks } = await database.prepare("SELECT * FROM Track").all<Track>();
-              
-              const projectsWithDetails = projects.map(project => {
-                  const categoryName = categories.find(c => c.id === project.category_id)?.name || 'N/A';
-                  const projectTracks = tracks.filter(t => t.project_id === project.id);
-                  return { ...project, categoryName: categoryName, trackCount: projectTracks.length };
-              });
-              return projectsWithDetails;
+        // GET /api/admin/projects
+        .get('/projects', async ({ store, set }) => {
+          try {
+            const env = store.env as Env;
+            const database = env.DB;
+            
+            const { results: categories } = await database.prepare("SELECT id, name FROM Category").all<Category>();
+            const { results: projects } = await database.prepare("SELECT * FROM Project").all<Project>();
+            const { results: tracks } = await database.prepare("SELECT * FROM Track").all<Track>();
+            
+            const projectsWithDetails = projects.map(project => {
+              const categoryName = categories.find(c => c.id === project.category_id)?.name || 'N/A';
+              const projectTracks = tracks.filter(t => t.project_id === project.id);
+              return { 
+                ...project, 
+                categoryName: categoryName, 
+                trackCount: projectTracks.length 
+              };
+            });
+            
+            return projectsWithDetails;
 
-            } catch (e: any) {
-              set.status = 500;
-              return { error: e.message };
-            }
+          } catch (e: any) {
+            console.error('Admin Projects Error:', e.message);
+            set.status = 500;
+            return { error: e.message };
+          }
         })
         
-        // ... (Endpoint อื่นๆ ที่ถูกตัดออก) ...
-        .post('/project', async ({ body, db, set }) => {
-           // ... (โค้ด POST INSERT) ...
-            return { success: true, message: "OK" }; // (ตัวอย่าง)
-        }, { body: t.Object({ /* ... (Validator) ... */ }) })
-    ) // สิ้นสุด adminGroup
-}; // สิ้นสุด createApp
+        // POST /api/admin/project (ตัวอย่าง)
+        .post('/project', async ({ body, store, set }) => {
+          try {
+            const env = store.env as Env;
+            const database = env.DB;
+            
+            // ตัวอย่าง: INSERT logic ที่นี่
+            // await database.prepare("INSERT INTO Project ...").run();
+            
+            return { success: true, message: "Project created" };
+          } catch (e: any) {
+            set.status = 500;
+            return { error: e.message };
+          }
+        }, { 
+          body: t.Object({ 
+            title: t.String(),
+            description: t.String(),
+            image: t.String(),
+            category_id: t.String()
+          }) 
+        })
+    );
+  return app;
+};
+
 
 // -----------------------------------------------------------------
-// 5. Export Worker (Final Setup)
+// 5. Export Worker
 // -----------------------------------------------------------------
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // ✅ สร้าง app instance ใหม่สำหรับทุก Request และส่ง env เข้าไป
+    // ✅ สร้าง app ใหม่ทุก request พร้อม inject env
     const app = createApp(env);
-    
-    // ✅ เรียก fetch โดยไม่ต้องส่ง env ซ้ำ
     return app.fetch(request);
   },
 };
