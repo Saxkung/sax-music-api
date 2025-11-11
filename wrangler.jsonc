@@ -1,20 +1,25 @@
-/**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
- */
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "sax-music-api",
-	"main": "src/index.ts",
-	"compatibility_date": "2025-11-07",
-	"observability": {
-		"enabled": true
-	},
-	"d1_databases": [
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sax-music-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-11-07",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
     {
       "binding": "DB",
       "database_name": "sax-music-db",
-      "database_id": "1a49308d-695f-4a1c-b749-2dd8cc6b8e2d" 
+      "database_id": "1a49308d-695f-4a1c-b749-2dd8cc6b8e2d"
     }
-  ]
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "sax-music"
+    }
+  ],
+  "vars": {
+    "R2_PUBLIC_URL": "https://hls.saxmusic.site"
+  }
 }
