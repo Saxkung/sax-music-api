@@ -21,5 +21,11 @@
   ],
   "vars": {
     "R2_PUBLIC_URL": "https://hls.saxmusic.site"
+  },
+  "alias": {
+    "@sinclair/typebox": "./node_modules/@sinclair/typebox",
+    "@sinclair/typebox/value": "./node_modules/@sinclair/typebox/build/cjs/value",
+    "@sinclair/typebox/compiler": "./node_modules/@sinclair/typebox/build/cjs/compiler",
+    "@sinclair/typebox/system": "./node_modules/@sinclair/typebox/build/cjs/system"
   }
 }
