@@ -38,8 +38,17 @@ interface Track {
 const checkAuth = (request: Request, env: Env): boolean => {
   const authHeader = request.headers.get('Authorization');
   const expectedToken = `Bearer ${env.ADMIN_TOKEN}`;
-  return authHeader === expectedToken;
+  return Boolean(env.ADMIN_TOKEN) && authHeader === expectedToken;
 };
+
+function validMediaUrl(value: unknown, env: Env): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      [new URL(env.R2_PUBLIC_URL).origin, 'https://saxmusic.site'].includes(url.origin);
+  } catch { return false; }
+}
 
 // ⭐️ --- Helper: ฟังก์ชันย้ายไฟล์ใน R2 (เวอร์ชันอัปเดต Path) ---
 async function handleR2Rename(
@@ -51,6 +60,10 @@ async function handleR2Rename(
   // ถ้าไม่มี tempKey (ไม่ได้อัปโหลดรูปใหม่) ให้ใช้ URL เดิม
   if (!tempImageKey) {
     return currentImageUrl;
+  }
+
+  if (!/^uploads\/[a-zA-Z0-9_.-]+$/.test(tempImageKey) || !/^[a-zA-Z0-9_-]+$/.test(projectId)) {
+    throw new Error('Invalid image upload');
   }
 
   try {
@@ -73,24 +86,7 @@ async function handleR2Rename(
       customMetadata: obj.customMetadata,
     });
 
-    // 4. ลบไฟล์ชั่วคราว
-    await env.BUCKET.delete(tempImageKey);
-
-    // 5. (Optional) ลบรูปเก่า (ถ้ามี และไม่ใช่รูปใหม่)
-    if (
-      currentImageUrl &&
-      currentImageUrl.includes(env.R2_PUBLIC_URL) &&
-      !currentImageUrl.includes('/uploads/') // ไม่ใช่ URL temp
-    ) {
-      try {
-        const oldKey = currentImageUrl.replace(env.R2_PUBLIC_URL + '/', '');
-        if (oldKey !== newKey) {
-          await env.BUCKET.delete(oldKey);
-        }
-      } catch (e) {
-        console.error('Failed to delete old image:', e);
-      }
-    }
+    // Keep previous covers until a deliberate cleanup; failed saves must not destroy them.
 
     return publicUrl; // คืน URL ใหม่
   } catch (e: any) {
@@ -105,7 +101,19 @@ async function handleR2Rename(
 const createApp = (env: Env) => {
   return (
     new Elysia({ aot: false })
-      .use(cors())
+      .use(cors({ origin: ['https://saxmusic.site', 'https://www.saxmusic.site', 'https://admin.saxmusic.site', 'http://localhost:5173', 'http://localhost:3000'] }))
+      .onRequest(({ request, set }) => {
+        set.headers['X-Content-Type-Options'] = 'nosniff';
+        if (new URL(request.url).pathname.startsWith('/api/admin/')) {
+          set.headers['Cache-Control'] = 'no-store';
+          if (request.method !== 'OPTIONS' && !checkAuth(request, env)) { set.status = 401; return { error: 'Unauthorized' }; }
+          if (Number(request.headers.get('content-length')) > 52 * 1024 * 1024) { set.status = 413; return { error: 'Each file must be 50 MB or smaller.' }; }
+        }
+      })
+      .onError(({ code, set }) => {
+        set.status = code === 'NOT_FOUND' ? 404 : code === 'PARSE' || code === 'VALIDATION' ? 400 : 500;
+        return { error: code === 'NOT_FOUND' ? 'Not found' : 'Unable to complete the request. Try again.' };
+      })
 
       // ✅ TEST ROUTE (Public)
       .get('/test', () => {
@@ -164,7 +172,7 @@ const createApp = (env: Env) => {
 
           return portfolioData;
         } catch (e: any) {
-          return new Response(JSON.stringify({ error: e.message }), {
+          return new Response(JSON.stringify({ error: 'Service temporarily unavailable' }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -206,7 +214,7 @@ const createApp = (env: Env) => {
           return projectsWithDetails;
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -227,7 +235,7 @@ const createApp = (env: Env) => {
           return results;
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -245,7 +253,7 @@ const createApp = (env: Env) => {
           return { success: true, id };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -290,7 +298,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -318,7 +326,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
       
@@ -338,7 +346,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -359,7 +367,9 @@ const createApp = (env: Env) => {
             description,
             category_id,
             display_order = 0,
-            tempImageKey, // ⭐️ รับ Key ชั่วคราว
+            tempImageKey,
+            image = '',
+            is_published = false,
           } = body as {
             id: string;
             title: string;
@@ -367,6 +377,8 @@ const createApp = (env: Env) => {
             category_id: string;
             display_order?: number;
             tempImageKey?: string;
+            image?: string;
+            is_published?: boolean;
           };
 
           if (!id || !title || !category_id) {
@@ -374,16 +386,21 @@ const createApp = (env: Env) => {
             return { error: 'id, title, and category_id are required' };
           }
 
+          if ((image && !validMediaUrl(image, env)) || (is_published && !image && !tempImageKey)) {
+            set.status = 400;
+            return { error: 'Add a cover from hls.saxmusic.site before publishing.' };
+          }
+
           // ⭐️ ย้ายไฟล์ใน R2 และเอา URL ใหม่ (ส่ง ID ที่ Frontend สร้างไป)
           const finalImageUrl = await handleR2Rename(
             env,
             tempImageKey || '',
             id, // projectId
-            ''  // URL เก่า (ยังไม่มี)
+            image
           );
 
           await env.DB.prepare(
-            'INSERT INTO Project (id, title, description, image, category_id, display_order, is_published) VALUES (?, ?, ?, ?, ?, ?, 1)'
+            'INSERT INTO Project (id, title, description, image, category_id, display_order, is_published) VALUES (?, ?, ?, ?, ?, ?, ?)'
           )
             .bind(
               id,
@@ -391,14 +408,15 @@ const createApp = (env: Env) => {
               description || '',
               finalImageUrl, // ⭐️ ใช้ URL ใหม่
               category_id,
-              display_order
+              display_order,
+              is_published ? 1 : 0
             )
             .run();
 
           return { success: true, id };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -429,11 +447,21 @@ const createApp = (env: Env) => {
           };
 
           // ⭐️ ย้ายไฟล์ใน R2 (ถ้ามี) และเอา URL สุดท้าย
+          if (image && !validMediaUrl(image, env)) {
+            set.status = 400;
+            return { error: 'Use a cover URL from hls.saxmusic.site.' };
+          }
+          const current = await env.DB.prepare('SELECT image, is_published FROM Project WHERE id = ?').bind(id).first<{ image: string; is_published: number }>();
+          if (!current) { set.status = 404; return { error: 'Project not found.' }; }
+          if ((is_published ?? Boolean(current.is_published)) && !(image ?? current.image) && !tempImageKey) {
+            set.status = 400;
+            return { error: 'Add a cover before publishing.' };
+          }
           const finalImageUrl = await handleR2Rename(
             env,
             tempImageKey || '',
             id, // projectId
-            image || '' // URL เก่า
+            image ?? current.image
           );
 
           const updates: string[] = [];
@@ -442,8 +470,10 @@ const createApp = (env: Env) => {
           if (title !== undefined) updates.push('title = ?'), values.push(title);
           if (description !== undefined) updates.push('description = ?'), values.push(description);
           
-          // ⭐️ อัปเดต 'image' ด้วย URL สุดท้ายเสมอ
-          updates.push('image = ?'), values.push(finalImageUrl);
+          // Publishing or reordering must preserve the existing cover.
+          if (image !== undefined || tempImageKey) {
+            updates.push('image = ?'), values.push(finalImageUrl);
+          }
 
           if (category_id !== undefined) updates.push('category_id = ?'), values.push(category_id);
           if (display_order !== undefined) updates.push('display_order = ?'), values.push(display_order);
@@ -466,7 +496,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -483,7 +513,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -503,7 +533,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -528,7 +558,7 @@ const createApp = (env: Env) => {
           return results;
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -560,6 +590,8 @@ const createApp = (env: Env) => {
             return { error: 'title, src, and project_id are required' };
           }
 
+          if (!validMediaUrl(src, env)) { set.status = 400; return { error: 'Use an audio URL from hls.saxmusic.site.' }; }
+
           const result = await env.DB.prepare(
             'INSERT INTO Track (title, artist, src, project_id, display_order, duration) VALUES (?, ?, ?, ?, ?, ?)'
           )
@@ -569,7 +601,7 @@ const createApp = (env: Env) => {
           return { success: true, id: result.meta.last_row_id };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -589,6 +621,8 @@ const createApp = (env: Env) => {
             display_order?: number;
             duration?: number;
           };
+
+          if (src !== undefined && !validMediaUrl(src, env)) { set.status = 400; return { error: 'Use an audio URL from hls.saxmusic.site.' }; }
 
           const updates: string[] = [];
           const values: any[] = [];
@@ -629,7 +663,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -650,7 +684,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
       
@@ -670,7 +704,7 @@ const createApp = (env: Env) => {
           return { success: true };
         } catch (e: any) {
           set.status = 500;
-          return { error: e.message };
+          return { error: 'Unable to complete the request. Try again.' };
         }
       })
 
@@ -678,104 +712,30 @@ const createApp = (env: Env) => {
       // 📤 R2 UPLOAD APIs
       // ============================================
 
-      // POST - Get Pre-signed URL for large files (PUT)
-      .post('/api/admin/upload/presign', async ({ request, set, body }) => {
-        if (!checkAuth(request, env)) {
-          set.status = 401;
-          return { error: 'Unauthorized' };
-        }
-
-        try {
-          const { filename, contentType } = body as {
-            filename: string;
-            contentType: string;
-          };
-
-          if (!filename || !contentType) {
-            set.status = 400;
-            return { error: 'filename and contentType are required' };
-          }
-
-          const timestamp = Date.now();
-          const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-_]/g, '_'); 
-          const key = `uploads/${timestamp}_${sanitizedFilename}`;
-
-          // สร้าง Pre-signed URL สำหรับ PUT (valid 1 hour)
-          const signedUrl = await env.BUCKET.sign(key, 'PUT', {
-             expires: 3600, // 1 ชั่วโมง
-             httpMetadata: { contentType },
-          });
-
-          const publicUrl = `${env.R2_PUBLIC_URL}/${key}`;
-
-          return {
-            uploadUrl: signedUrl, // นี่คือ URL ที่จะใช้ PUT
-            key: key,
-            publicUrl: publicUrl,
-          };
-        } catch (e: any) {
-          set.status = 500;
-          return { error: `Failed to create presigned URL: ${e.message}` };
-        }
+      .post('/api/admin/upload/presign', ({ request, set }) => {
+        if (!checkAuth(request, env)) { set.status = 401; return { error: 'Unauthorized' }; }
+        set.status = 410;
+        return { error: 'Use authenticated direct upload for files up to 50 MB.' };
       })
-
-      // POST - Direct upload for small files (<5MB)
-      // ⭐️⭐️⭐️ นี่คือเวอร์ชันที่แก้ไขแล้ว ⭐️⭐️⭐️
       .post('/api/admin/upload/direct', async ({ request, set, body }) => {
-        if (!checkAuth(request, env)) {
-          set.status = 401;
-          return { error: 'Unauthorized' };
-        }
-
+        if (!checkAuth(request, env)) { set.status = 401; return { error: 'Unauthorized' }; }
+        const { file, bundle, relativePath } = body as { file: File; bundle?: string; relativePath?: string };
+        if (!file || typeof file.stream !== 'function' || !file.size) { set.status = 400; return { error: 'Choose a file to upload.' }; }
+        if (file.size > 50 * 1024 * 1024) { set.status = 413; return { error: 'Each file must be 50 MB or smaller.' }; }
+        const types: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif', mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', ogg: 'audio/ogg', opus: 'audio/ogg', m3u8: 'application/vnd.apple.mpegurl', ts: 'video/mp2t', mp4: 'video/mp4', m4s: 'video/iso.segment', json: 'application/json' };
+        const extension = file.name.split('.').pop()?.toLowerCase() || '';
+        const contentType = types[extension];
+        if (!contentType) { set.status = 400; return { error: 'Choose an image, audio file, or HLS package.' }; }
+        if (contentType.startsWith('image/') && file.size > 5 * 1024 * 1024) { set.status = 413; return { error: 'Cover images must be 5 MB or smaller.' }; }
+        let key: string;
+        if (bundle && relativePath) {
+          if (!/^[a-f0-9-]{36}$/.test(bundle) || relativePath.length > 512 || relativePath.split('/').some(part => !part || part === '.' || part === '..' || /[\\\x00-\x1f?#]/.test(part))) { set.status = 400; return { error: 'Invalid HLS package path.' }; }
+          key = 'hls/' + bundle + '/' + relativePath;
+        } else key = 'uploads/' + crypto.randomUUID() + '_' + file.name.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(-160);
         try {
-          console.log('[Worker] --- DIRECT UPLOAD V3 RUNNING ---'); // ⭐️ Log ใหม่
-          
-          // 'body' ที่ Elysia parse มาให้สำหรับ multipart/form-data คือ Object ธรรมดา
-          const { file } = body as { file: File }; 
-
-          if (!file || typeof file.arrayBuffer !== 'function') { 
-            set.status = 400;
-            console.error('[Worker] Body did not contain a valid file:', body);
-            return { error: 'No file uploaded or body parse failed' };
-          }
-          
-          console.log('[Worker] File received:', file.name, file.size, 'bytes');
-          
-          const MAX_SIZE = 5 * 1024 * 1024; 
-          if (file.size > MAX_SIZE) {
-            set.status = 413;
-            return { error: `File size exceeds 5MB limit. Use pre-signed URL instead.` };
-          }
-
-          const timestamp = Date.now();
-          const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9.-_]/g, '_');
-          const key = `uploads/${timestamp}_${sanitizedFilename}`;
-
-          const fileData = await file.arrayBuffer();
-          console.log('[Worker] File data size:', fileData.byteLength, 'bytes');
-
-          console.log('[Worker] Uploading to R2...');
-          await env.BUCKET.put(key, fileData, {
-            httpMetadata: {
-              contentType: file.type,
-              contentDisposition: `inline; filename="${file.name}"`
-            },
-          });
-
-          const publicUrl = `${env.R2_PUBLIC_URL}/${key}`;
-          console.log('[Worker] Upload successful:', publicUrl);
-
-          return {
-            success: true,
-            key: key,
-            url: publicUrl,
-          };
-        } catch (e: any) {
-          console.error('[Worker] Direct upload failed:', e.message);
-          console.error('[Worker] Error stack:', e.stack);
-          set.status = 500;
-          return { error: `Direct upload failed: ${e.message}` };
-        }
+          await env.BUCKET.put(key, file.stream(), { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } });
+          return { success: true, key, url: env.R2_PUBLIC_URL + '/' + key.split('/').map(encodeURIComponent).join('/') };
+        } catch { set.status = 500; return { error: 'Upload failed. Try again.' }; }
       })
   );
 };
@@ -783,6 +743,6 @@ const createApp = (env: Env) => {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const app = createApp(env);
-    return app.fetch(request, env);
+    return app.handle(request);
   },
 };

@@ -27,5 +27,7 @@
     "@sinclair/typebox/value": "./node_modules/@sinclair/typebox/build/cjs/value",
     "@sinclair/typebox/compiler": "./node_modules/@sinclair/typebox/build/cjs/compiler",
     "@sinclair/typebox/system": "./node_modules/@sinclair/typebox/build/cjs/system"
-  }
+  },
+  "account_id": "06adb831a22b9b8824bea37e691cf101",
+  "keep_vars": true
 }
