@@ -2,6 +2,14 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "sax-music-api",
   "main": "src/index.ts",
+  "workers_dev": true,
+  "preview_urls": true,
+  "routes": [
+    {
+      "pattern": "api.saxmusic.work",
+      "custom_domain": true
+    }
+  ],
   "compatibility_date": "2025-11-07",
   "observability": {
     "enabled": true
@@ -20,7 +28,7 @@
     }
   ],
   "vars": {
-    "R2_PUBLIC_URL": "https://hls.saxmusic.site"
+    "R2_PUBLIC_URL": "https://hls.saxmusic.work"
   },
   "alias": {
     "@sinclair/typebox": "./node_modules/@sinclair/typebox",

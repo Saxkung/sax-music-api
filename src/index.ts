@@ -46,7 +46,7 @@ function validMediaUrl(value: unknown, env: Env): boolean {
   try {
     const url = new URL(value);
     return url.protocol === 'https:' && !url.username && !url.password &&
-      [new URL(env.R2_PUBLIC_URL).origin, 'https://saxmusic.site'].includes(url.origin);
+      [new URL(env.R2_PUBLIC_URL).origin, 'https://saxmusic.work'].includes(url.origin);
   } catch { return false; }
 }
 
@@ -101,7 +101,7 @@ async function handleR2Rename(
 const createApp = (env: Env) => {
   return (
     new Elysia({ aot: false })
-      .use(cors({ origin: ['https://saxmusic.site', 'https://www.saxmusic.site', 'https://admin.saxmusic.site', 'http://localhost:5173', 'http://localhost:3000'] }))
+      .use(cors({ origin: ['https://saxmusic.work', 'https://www.saxmusic.work', 'https://admin.saxmusic.work', 'http://localhost:5173', 'http://localhost:3000'] }))
       .onRequest(({ request, set }) => {
         set.headers['X-Content-Type-Options'] = 'nosniff';
         if (new URL(request.url).pathname.startsWith('/api/admin/')) {
@@ -388,7 +388,7 @@ const createApp = (env: Env) => {
 
           if ((image && !validMediaUrl(image, env)) || (is_published && !image && !tempImageKey)) {
             set.status = 400;
-            return { error: 'Add a cover from hls.saxmusic.site before publishing.' };
+            return { error: `Add a cover from ${new URL(env.R2_PUBLIC_URL).hostname} before publishing.` };
           }
 
           // ⭐️ ย้ายไฟล์ใน R2 และเอา URL ใหม่ (ส่ง ID ที่ Frontend สร้างไป)
@@ -449,7 +449,7 @@ const createApp = (env: Env) => {
           // ⭐️ ย้ายไฟล์ใน R2 (ถ้ามี) และเอา URL สุดท้าย
           if (image && !validMediaUrl(image, env)) {
             set.status = 400;
-            return { error: 'Use a cover URL from hls.saxmusic.site.' };
+            return { error: `Use a cover URL from ${new URL(env.R2_PUBLIC_URL).hostname}.` };
           }
           const current = await env.DB.prepare('SELECT image, is_published FROM Project WHERE id = ?').bind(id).first<{ image: string; is_published: number }>();
           if (!current) { set.status = 404; return { error: 'Project not found.' }; }
@@ -590,7 +590,7 @@ const createApp = (env: Env) => {
             return { error: 'title, src, and project_id are required' };
           }
 
-          if (!validMediaUrl(src, env)) { set.status = 400; return { error: 'Use an audio URL from hls.saxmusic.site.' }; }
+          if (!validMediaUrl(src, env)) { set.status = 400; return { error: `Use an audio URL from ${new URL(env.R2_PUBLIC_URL).hostname}.` }; }
 
           const result = await env.DB.prepare(
             'INSERT INTO Track (title, artist, src, project_id, display_order, duration) VALUES (?, ?, ?, ?, ?, ?)'
@@ -622,7 +622,7 @@ const createApp = (env: Env) => {
             duration?: number;
           };
 
-          if (src !== undefined && !validMediaUrl(src, env)) { set.status = 400; return { error: 'Use an audio URL from hls.saxmusic.site.' }; }
+          if (src !== undefined && !validMediaUrl(src, env)) { set.status = 400; return { error: `Use an audio URL from ${new URL(env.R2_PUBLIC_URL).hostname}.` }; }
 
           const updates: string[] = [];
           const values: any[] = [];
