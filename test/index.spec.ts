@@ -12,6 +12,21 @@ beforeEach(async () => {
   await request('/categories', 'POST', { id: 'film', name: 'Film', display_order: 0 });
 });
 describe('Sax Music workflows in local Workers/D1/R2', () => {
+  it('allows the new web and Studio origins, not the retired domains', async () => {
+    for (const site of ['https://saxmusic.work', 'https://www.saxmusic.work', 'https://admin.saxmusic.work', 'http://localhost:5173', 'http://localhost:3000']) {
+      const response = await SELF.fetch(origin + '/api/v1/portfolio', { headers: { Origin: site } });
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(site);
+    }
+    for (const site of ['https://saxmusic.site', 'https://www.saxmusic.site', 'https://admin.saxmusic.site']) {
+      const response = await SELF.fetch(origin + '/api/v1/portfolio', { headers: { Origin: site } });
+      expect(response.headers.get('Access-Control-Allow-Origin')).not.toBe(site);
+    }
+  });
+  it('rejects the old media domain for new submissions and points to the configured media host', async () => {
+    const response = await request('/projects', 'POST', { id: 'project', title: 'Soundtrack', category_id: 'film', image: 'https://hls.saxmusic.site/img/cover.jpg' });
+    expect(response.status).toBe(400);
+    expect((await response.json() as { error: string }).error).toContain('hls.saxmusic.work');
+  });
   it('requires authentication before accepting admin requests', async () => {
     expect((await SELF.fetch(origin + '/api/admin/projects')).status).toBe(401);
     expect((await SELF.fetch(origin + '/api/admin/upload/direct', { method: 'POST', body: 'invalid multipart' })).status).toBe(401);
@@ -21,10 +36,12 @@ describe('Sax Music workflows in local Workers/D1/R2', () => {
     expect(response.status).toBe(401);
   });
   it('creates a draft, then publishes without losing the cover', async () => {
-    const image = 'https://hls.saxmusic.site/img/project/cover.jpg';
+    const image = 'https://hls.saxmusic.work/img/project/cover.jpg';
     expect((await request('/projects', 'POST', { id: 'project', title: 'Soundtrack', category_id: 'film', image })).status).toBe(200);
     const draft = await (await request('/projects')).json() as Array<{ image: string; is_published: number }>;
     expect(draft[0]).toMatchObject({ image, is_published: 0 });
+    const publicDraft = await (await SELF.fetch(origin + '/api/v1/portfolio')).json() as Array<{ items: Array<{ image: string }> }>;
+    expect(publicDraft.flatMap(category => category.items)).toHaveLength(0);
     await request('/projects/project', 'PUT', { is_published: true });
     const published = await (await request('/projects')).json() as Array<{ image: string; is_published: number }>;
     expect(published[0]).toMatchObject({ image, is_published: 1 });
@@ -36,7 +53,7 @@ describe('Sax Music workflows in local Workers/D1/R2', () => {
     const audio = await SELF.fetch(origin + '/api/admin/upload/direct', { method: 'POST', headers: { Authorization: 'Bearer local-test-token' }, body: form });
     expect(audio.status).toBe(200);
     const data = await audio.json() as { key: string; url: string };
-    expect(data.url).toContain('https://hls.saxmusic.site/uploads/');
+    expect(data.url).toContain('https://hls.saxmusic.work/uploads/');
     expect(await (await bindings.BUCKET.get(data.key))?.text()).toBe('test-audio');
     const packageForm = new FormData(); packageForm.append('file', new File(['segment'], 'segment001.ts')); packageForm.append('bundle', '12345678-1234-1234-1234-123456789abc'); packageForm.append('relativePath', 'theme/segment001.ts');
     const segment = await SELF.fetch(origin + '/api/admin/upload/direct', { method: 'POST', headers: { Authorization: 'Bearer local-test-token' }, body: packageForm });
@@ -50,8 +67,8 @@ describe('Sax Music workflows in local Workers/D1/R2', () => {
     }
   });
   it('reorders tracks without changing project metadata', async () => {
-    await request('/projects', 'POST', { id: 'project', title: 'Soundtrack', category_id: 'film', image: 'https://hls.saxmusic.site/img/a.jpg' });
-    for (const [index, title] of ['Opening', 'Finale'].entries()) await request('/tracks', 'POST', { title, src: 'https://hls.saxmusic.site/theme.mp3', project_id: 'project', display_order: index });
+    await request('/projects', 'POST', { id: 'project', title: 'Soundtrack', category_id: 'film', image: 'https://hls.saxmusic.work/img/a.jpg' });
+    for (const [index, title] of ['Opening', 'Finale'].entries()) await request('/tracks', 'POST', { title, src: 'https://hls.saxmusic.work/theme.mp3', project_id: 'project', display_order: index });
     const tracks = await (await request('/tracks/project')).json() as Array<{ id: number }>;
     await request('/tracks/reorder', 'PATCH', { items: [{ id: tracks[0].id, display_order: 1 }, { id: tracks[1].id, display_order: 0 }] });
     const reordered = await (await request('/tracks/project')).json() as Array<{ title: string }>;
